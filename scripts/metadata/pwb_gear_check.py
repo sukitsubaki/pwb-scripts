@@ -4,90 +4,268 @@
 import pywikibot
 from pywikibot import pagegenerators
 import re
+import argparse
 
-# Site and category definition
+"""
+pwb_gear_check.py - Check for missing camera and lens information
+
+This script analyzes files in a specified category to identify 
+images without proper camera or lens metadata. It helps photographers 
+maintain comprehensive documentation of their equipment.
+
+Features:
+- Scan files for camera and lens information
+- Generate a report of files missing gear details
+- Support for interactive and batch processing
+- Configurable search patterns
+
+Usage:
+    python pwb_gear_check.py --category "YOUR_UPLOADS_CATEGORY"
+    python pwb_gear_check.py --interactive
+"""
+
+# Site and category configuration
 site = pywikibot.Site('commons', 'commons')
-category = pywikibot.Category(site, 'Category:YOUR_UPLOADS_CATEGORY')
 
-# Generator to process files in the category
-file_generator = pagegenerators.CategorizedPageGenerator(category, recurse=False)
+# Configurable gear information patterns
+GEAR_PATTERNS = {
+    'camera': [
+        r'Gear/CAMERA',
+        r'Camera\s*[:=]',
+        r'Equipment\s*[:=]',
+        r'Camera\s*Model'
+    ],
+    'lens': [
+        r'Gear/LENS',
+        r'Lens\s*[:=]',
+        r'Lens\s*Model'
+    ]
+}
 
-# List for files with missing gear information
-gear_files = []
+def check_file_gear_info(file_page, patterns=None):
+    """
+    Check a file for camera and lens information.
+    
+    Args:
+        file_page (pywikibot.Page): File page to check
+        patterns (dict, optional): Regex patterns to search for
+    
+    Returns:
+        dict: Gear information check results
+    """
+    if patterns is None:
+        patterns = GEAR_PATTERNS
+    
+    try:
+        # Get file text
+        text = file_page.text.lower()
+        
+        # Check results
+        results = {
+            'title': file_page.title(),
+            'missing': []
+        }
+        
+        # Check for camera information
+        if not any(re.search(pattern, text) for pattern in patterns['camera']):
+            results['missing'].append('Camera Information')
+        
+        # Check for lens information
+        if not any(re.search(pattern, text) for pattern in patterns['lens']):
+            results['missing'].append('Lens Information')
+        
+        return results
+    
+    except Exception as e:
+        pywikibot.error(f"Error checking gear info for {file_page.title()}: {e}")
+        return {
+            'title': file_page.title(),
+            'missing': ['Error processing file'],
+            'error': str(e)
+        }
 
-# Regular expression to find specific gear structures
-gear_pattern = re.compile(r'Gear/(CAMERA|LENS)')
+def process_category(category_name, patterns=None):
+    """
+    Process all files in a category and check for gear information.
+    
+    Args:
+        category_name (str): Name of the category to process
+        patterns (dict, optional): Regex patterns to search for
+    
+    Returns:
+        tuple: (total files processed, files missing gear info)
+    """
+    # Ensure category has Category: prefix
+    if not category_name.startswith('Category:'):
+        category_name = f'Category:{category_name}'
+    
+    try:
+        category = pywikibot.Category(site, category_name)
+        
+        if not category.exists():
+            pywikibot.error(f"Category {category_name} does not exist")
+            return 0, []
+        
+        total_files = 0
+        files_missing_gear = []
+        
+        for file_page in pagegenerators.CategorizedPageGenerator(category, recurse=False):
+            if file_page.namespace() != 6:  # Namespace 6 = File namespace
+                continue
+            
+            total_files += 1
+            
+            # Check gear information
+            gear_check = check_file_gear_info(file_page, patterns)
+            
+            if gear_check['missing'] and 'Error processing file' not in gear_check['missing']:
+                files_missing_gear.append(gear_check)
+        
+        # Generate and save report
+        report = create_report(category_name, total_files, files_missing_gear)
+        save_report(report)
+        
+        return total_files, files_missing_gear
+    
+    except Exception as e:
+        pywikibot.error(f"Error processing category {category_name}: {e}")
+        return 0, []
 
-# Process each file
-def main():
-    for file_page in file_generator:
-        if not file_page.exists() or file_page.namespace() != 6:  # Namespace 6 = File namespace
-            continue
+def create_report(category_name, total_files, files_missing_gear):
+    """
+    Create a report of gear information check results.
+    
+    Args:
+        category_name (str): Name of the processed category
+        total_files (int): Total number of files processed
+        files_missing_gear (list): List of files missing gear information
+    
+    Returns:
+        str: Formatted report in wiki markup
+    """
+    report = f"""= Gear Information Check Report =
 
-        print(f"Checking file: {file_page.title()}")
+== Summary ==
+* Category processed: {category_name}
+* Total files: {total_files}
+* Files missing gear information: {len(files_missing_gear)}
 
-        # Load the file's text
-        text = file_page.text
-
-        # Check for the presence of specific gear terms
-        if gear_pattern.search(text):
-            print(f"Gear found in: {file_page.title()}")
-            gear_files.append(f"* [[:{file_page.title()}]]\n")
-        else:
-            print(f"No gear found in: {file_page.title()}")
-
-    # If there are files with gear information, save to user page
-    if gear_files:
-        try:
-            # Create content for the user page
-            page_content = "The following files are missing camera/lens information:\n\n"
-            page_content += ''.join(gear_files)
-
-            # Update user page
-            user_page = pywikibot.Page(site, 'User:YOUR_USERNAME/pwb/Equipment')
-            user_page.text = page_content
-            user_page.save(summary="Updated list of files without camera/lens information.")
-            print(f"Page {user_page.title()} successfully updated.")
-        except Exception as e:
-            print(f"Error updating page {user_page.title()}: {e}")
+== Files Missing Gear Information ==
+"""
+    
+    if files_missing_gear:
+        for file_info in files_missing_gear:
+            report += f"* [[:{file_info['title']}]]\n"
+            for missing_info in file_info['missing']:
+                report += f"  - Missing: {missing_info}\n"
     else:
-        print("No files without camera/lens information found.")
+        report += "No files with missing gear information found.\n"
+    
+    report += f"\nReport generated by pwb_gear_check.py on ~~~~~"
+    
+    return report
 
-    # Count the number of files in category "Category:YOUR_UPLOADS_CATEGORY"
+def save_report(report):
+    """
+    Save the report to a user page.
+    
+    Args:
+        report (str): Report content to save
+    """
     try:
-        pwb_meta_category = pywikibot.Category(site, 'Category:YOUR_UPLOADS_CATEGORY')
-        pwb_meta_files = list(pagegenerators.CategorizedPageGenerator(pwb_meta_category, recurse=False))
-        meta_file_count = len(pwb_meta_files)
-        print(f"Number of files in category 'YOUR_UPLOADS_CATEGORY': {meta_file_count}")
+        user_page = pywikibot.Page(site, 'User:YOUR_USERNAME/pwb/Gear_Check_Report')
+        user_page.text = report
+        user_page.save(summary="pwb: Updated gear information check report")
+        print(f"Report saved to {user_page.title()}")
     except Exception as e:
-        print(f"Error counting files in category 'YOUR_UPLOADS_CATEGORY': {e}")
-        meta_file_count = "none"  # In case of error
+        print(f"Error saving report: {e}")
+        print("Report content:")
+        print(report)
 
-    # Update the user page "User:YOUR_USERNAME/pwb" with the current number of files in the category "YOUR_UPLOADS_CATEGORY"
-    try:
-        # Load the page
-        pwb_page = pywikibot.Page(site, 'User:YOUR_USERNAME/pwb')
-        pwb_text = pwb_page.text
-
-        # Count the number of files on the page "User:YOUR_USERNAME/pwb/Equipment"
-        gear_file_count = len(gear_files)
-
-        # Update text for gear files
-        updated_text = re.sub(
-            r"User:YOUR_USERNAME/pwb/Equipment \((\d+|none)\)",
-            f"User:YOUR_USERNAME/pwb/Equipment ({gear_file_count})",
-            updated_text
-        )
-
-        # Check if updates are necessary
-        if pwb_text != updated_text:
-            pwb_page.text = updated_text
-            pwb_page.save(summary="pwb: Gear updated")
-            print(f"Page {pwb_page.title()} successfully updated.")
+def interactive_mode():
+    """Interactive mode for gear information checking."""
+    print("=== PWB Gear Information Check Tool ===")
+    
+    while True:
+        print("\nOptions:")
+        print("1. Check gear information in a category")
+        print("2. Exit")
+        
+        choice = input("\nEnter your choice (1-2): ").strip()
+        
+        if choice == '1':
+            category_name = input("Enter category name (with or without 'Category:' prefix): ").strip()
+            
+            # Optional: Custom gear patterns
+            use_custom = input("Use custom gear information patterns? (y/n): ").lower() == 'y'
+            custom_patterns = None
+            
+            if use_custom:
+                custom_patterns = {
+                    'camera': [],
+                    'lens': []
+                }
+                print("Enter custom regex patterns (leave blank to skip)")
+                camera_patterns = input("Camera patterns (comma-separated): ").strip()
+                lens_patterns = input("Lens patterns (comma-separated): ").strip()
+                
+                if camera_patterns:
+                    custom_patterns['camera'] = [p.strip() for p in camera_patterns.split(',')]
+                if lens_patterns:
+                    custom_patterns['lens'] = [p.strip() for p in lens_patterns.split(',')]
+            
+            # Process category
+            total_files, files_missing_gear = process_category(
+                category_name, 
+                patterns=custom_patterns
+            )
+            
+            print(f"\nProcessed {total_files} files")
+            print(f"Files missing gear information: {len(files_missing_gear)}")
+        
+        elif choice == '2':
+            print("Exiting...")
+            break
+        
         else:
-            print(f"Page {pwb_page.title()} does not need updating.")
-    except Exception as e:
-        print(f"Error updating page {pwb_page.title()}: {e}")
+            print("Invalid choice")
+
+def main():
+    """
+    Main function to handle command-line arguments and script execution.
+    """
+    parser = argparse.ArgumentParser(description='Check gear information in Wikimedia Commons files')
+    
+    # Create mutually exclusive group for the modes
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument('--category', help='Process files in a specific category')
+    group.add_argument('--interactive', action='store_true', help='Run in interactive mode')
+    
+    # Optional custom pattern arguments
+    parser.add_argument('--camera-patterns', nargs='+', 
+                        help='Custom regex patterns for camera information')
+    parser.add_argument('--lens-patterns', nargs='+', 
+                        help='Custom regex patterns for lens information')
+    
+    args = parser.parse_args()
+    
+    # Prepare custom patterns if provided
+    custom_patterns = None
+    if args.camera_patterns or args.lens_patterns:
+        custom_patterns = {
+            'camera': args.camera_patterns or [],
+            'lens': args.lens_patterns or []
+        }
+    
+    if args.interactive:
+        interactive_mode()
+    elif args.category:
+        total_files, files_missing_gear = process_category(
+            args.category, 
+            patterns=custom_patterns
+        )
+        print(f"Processed {total_files} files")
+        print(f"Files missing gear information: {len(files_missing_gear)}")
 
 if __name__ == "__main__":
     main()
