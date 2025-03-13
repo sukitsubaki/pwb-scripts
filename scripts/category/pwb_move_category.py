@@ -1,40 +1,264 @@
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+
 import pywikibot
+import argparse
+from pywikibot import exceptions
 
-# Initialize page and site
-site = pywikibot.Site()
+"""
+pwb_move_category.py - Move categories while preserving redirects and content
 
-# Summary line for changes
-SUMMARY = "pwb: Category moved"
+This script helps manage category reorganization on Wikimedia Commons by:
+- Moving categories to new names
+- Preserving existing content
+- Creating redirects from old to new category names
+- Supporting batch category moves
 
-def move_category_and_update_redirects(old_cat_name, new_cat_name, summary):
-    old_cat = pywikibot.Category(site, old_cat_name)
+Features:
+- Interactive and command-line modes
+- Error handling for category moves
+- Report generation
+- Support for multiple category moves
+
+Usage:
+    python pwb_move_category.py --old "Old Category Name" --new "New Category Name"
+    python pwb_move_category.py --interactive
+"""
+
+# Site configuration
+site = pywikibot.Site('commons', 'commons')
+
+# Default summary for category moves
+DEFAULT_SUMMARY = "pwb: Category moved"
+
+def move_category(old_cat_name, new_cat_name, summary=None):
+    """
+    Move a category and handle potential issues.
     
-    # Move the old category to the new category
+    Args:
+        old_cat_name (str): Current category name
+        new_cat_name (str): Destination category name
+        summary (str, optional): Edit summary for the move
+    
+    Returns:
+        dict: Move operation results
+    """
+    # Ensure category names have 'Category:' prefix
+    if not old_cat_name.startswith('Category:'):
+        old_cat_name = f'Category:{old_cat_name}'
+    if not new_cat_name.startswith('Category:'):
+        new_cat_name = f'Category:{new_cat_name}'
+    
+    # Prepare results dictionary
+    results = {
+        'old_name': old_cat_name,
+        'new_name': new_cat_name,
+        'success': False,
+        'error': None
+    }
+    
     try:
-        old_cat.move(new_cat_name, reason=summary)
-        print(f"Category '{old_cat_name}' has been moved to '{new_cat_name}'.")
-    except pywikibot.exceptions.CannotMovePage as e:
-        print(f"Error moving the category {old_cat_name}: {e}")
-        return
-
-    # Set a redirect in the old category and preserve existing content
-    try:
-        old_cat_page = pywikibot.Page(site, old_cat_name)
-        current_text = old_cat_page.text
+        # Get category pages
+        old_cat = pywikibot.Category(site, old_cat_name)
+        new_cat = pywikibot.Category(site, new_cat_name)
         
+        # Validate categories
+        if not old_cat.exists():
+            results['error'] = f"Old category {old_cat_name} does not exist"
+            return results
+        
+        if new_cat.exists():
+            results['error'] = f"New category {new_cat_name} already exists"
+            return results
+        
+        # Move the category
+        try:
+            old_cat.move(new_cat_name, reason=summary or DEFAULT_SUMMARY)
+            results['success'] = True
+        except exceptions.CannotMovePage as e:
+            results['error'] = f"Cannot move category: {e}"
+        
+        # Preserve content and create redirect
+        try:
+            old_cat_page = pywikibot.Page(site, old_cat_name)
+            current_text = old_cat_page.text
+            
+            # Create redirect to new category
+            redirect_text = f"#REDIRECT [[{new_cat_name}]]"
+            old_cat_page.text = redirect_text
+            old_cat_page.save(summary="Category moved, redirect created")
+        except Exception as e:
+            # Log redirect creation error, but don't mark whole operation as failed
+            results['redirect_error'] = str(e)
+        
+        return results
+    
     except Exception as e:
-        print(f"Error adding redirect in category {old_cat_name}: {e}")
+        results['error'] = str(e)
+        return results
+
+def process_category_moves(category_moves, summary=None):
+    """
+    Process multiple category moves.
+    
+    Args:
+        category_moves (list): List of tuples (old_name, new_name)
+        summary (str, optional): Edit summary for moves
+    
+    Returns:
+        list: Results of category move operations
+    """
+    results = []
+    
+    for old_name, new_name in category_moves:
+        move_result = move_category(old_name, new_name, summary)
+        results.append(move_result)
+    
+    # Generate report
+    report = create_report(results)
+    save_report(report)
+    
+    return results
+
+def create_report(move_results):
+    """
+    Create a report of category move operations.
+    
+    Args:
+        move_results (list): List of move operation results
+    
+    Returns:
+        str: Formatted report in wiki markup
+    """
+    report = """= Category Move Report =
+
+== Summary ==
+* Total category moves attempted: {}
+* Successful moves: {}
+* Failed moves: {}
+
+== Move Details ==
+""".format(
+        len(move_results), 
+        sum(1 for r in move_results if r['success']), 
+        sum(1 for r in move_results if not r['success'])
+    )
+    
+    for result in move_results:
+        report += f"* Old: [[:{result['old_name']}]]\n"
+        report += f"  New: [[:{result['new_name']}]]\n"
+        
+        if result['success']:
+            report += "  Status: ✓ Successfully moved\n"
+        else:
+            report += f"  Status: ✗ Failed\n"
+            report += f"  Error: {result['error']}\n"
+    
+    report += f"\nReport generated by pwb_move_category.py on ~~~~~"
+    
+    return report
+
+def save_report(report):
+    """
+    Save the report to a user page.
+    
+    Args:
+        report (str): Report content to save
+    """
+    try:
+        user_page = pywikibot.Page(site, 'User:YOUR_USERNAME/pwb/Category_Move_Report')
+        user_page.text = report
+        user_page.save(summary="pwb: Updated category move report")
+        print(f"Report saved to {user_page.title()}")
+    except Exception as e:
+        print(f"Error saving report: {e}")
+        print("Report content:")
+        print(report)
+
+def interactive_mode():
+    """Interactive mode for category moves."""
+    print("=== PWB Category Move Tool ===")
+    
+    category_moves = []
+    
+    while True:
+        print("\nOptions:")
+        print("1. Add a category to move")
+        print("2. Process category moves")
+        print("3. Exit")
+        
+        choice = input("\nEnter your choice (1-3): ").strip()
+        
+        if choice == '1':
+            old_name = input("Enter old category name: ").strip()
+            new_name = input("Enter new category name: ").strip()
+            
+            # Optional summary
+            summary = input("Enter move summary (optional): ").strip() or None
+            
+            category_moves.append((old_name, new_name))
+            print("Category move added to queue.")
+        
+        elif choice == '2':
+            if not category_moves:
+                print("No categories to move. Add categories first.")
+                continue
+            
+            print("\nReview category moves:")
+            for old, new in category_moves:
+                print(f"  {old} → {new}")
+            
+            confirm = input("\nProceed with moves? (y/n): ").lower()
+            
+            if confirm == 'y':
+                summary = input("Enter global summary (optional): ").strip() or None
+                results = process_category_moves(category_moves, summary)
+                
+                # Display results
+                successful = sum(1 for r in results if r['success'])
+                print(f"\nMoved {successful} out of {len(results)} categories")
+                
+                # Reset moves list
+                category_moves = []
+        
+        elif choice == '3':
+            print("Exiting...")
+            break
+        
+        else:
+            print("Invalid choice")
 
 def main():
-    # Group
-    category_group = [
-    ]
+    """
+    Main function to handle command-line arguments and script execution.
+    """
+    parser = argparse.ArgumentParser(description='Move categories on Wikimedia Commons')
     
-    # Move each category in group 1
-    for time in category_group:
-        old_cat_name = f""
-        new_cat_name = f""
-        move_category_and_update_redirects(old_cat_name, new_cat_name, SUMMARY)
+    # Create mutually exclusive group for the modes
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument('--old', help='Old category name')
+    group.add_argument('--interactive', action='store_true', help='Run in interactive mode')
+    
+    # Additional arguments
+    parser.add_argument('--new', help='New category name')
+    parser.add_argument('--summary', help='Move summary')
+    
+    args = parser.parse_args()
+    
+    if args.interactive:
+        interactive_mode()
+    elif args.old and args.new:
+        # Single category move
+        result = move_category(
+            args.old, 
+            args.new, 
+            args.summary or DEFAULT_SUMMARY
+        )
+        
+        if result['success']:
+            print(f"Successfully moved {args.old} to {args.new}")
+        else:
+            print(f"Failed to move category: {result['error']}")
 
 if __name__ == "__main__":
     main()

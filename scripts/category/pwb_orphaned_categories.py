@@ -1,52 +1,194 @@
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+
 import pywikibot
+import argparse
+import re
 
-# Initialize site
-site = pywikibot.Site()
+"""
+pwb_orphaned_categories.py - Identify and manage orphaned categories
 
-# Summary line for changes
-SUMMARY = "pwb: Redirect added"
+This script helps maintain a clean category structure by:
+- Identifying categories without parent categories
+- Suggesting potential parent categories
+- Creating redirects or updating category links
 
-# List of categories from the request
-# These could be date-based categories or any other list
-categories_dates = [
-    # Add more dates as needed
-]
+Features:
+- Scan specific dates or category lists
+- Interactive mode for manual review
+- Generate comprehensive reports
+- Optionally create redirects
 
-# List for categories not found
-not_found_categories = []
+Usage:
+    python pwb_orphaned_categories.py --dates 2023-01-01 2023-02-15
+    python pwb_orphaned_categories.py --interactive
+"""
 
-def process_category(date_str):
-    # Create the name of the category we're looking for
-    search_cat_name = f"Category:Photographs taken on {date_str} by YOUR_USERNAME"
+# Site configuration
+site = pywikibot.Site('commons', 'commons')
+
+def find_category(date_str, username):
+    """
+    Find a category for a specific date and user.
     
-    # Try to load the category
-    search_cat = pywikibot.Category(site, search_cat_name)
+    Args:
+        date_str (str): Date in YYYY-MM-DD format
+        username (str): Username to include in category name
     
-    if search_cat.exists():
-        print(f"Category found: {search_cat_name}")
+    Returns:
+        pywikibot.Category: Category page if found
+    """
+    try:
+        category_name = f"Category:Photographs taken on {date_str} by {username}"
+        category = pywikibot.Category(site, category_name)
+        return category
+    except Exception as e:
+        pywikibot.error(f"Error finding category for {date_str}: {e}")
+        return None
+
+def check_category_status(category):
+    """
+    Check if a category is orphaned (has no parent categories).
+    
+    Args:
+        category (pywikibot.Category): Category to check
+    
+    Returns:
+        dict: Category status information
+    """
+    try:
+        # Extract parent categories from category text
+        text = category.text
+        parent_patterns = [
+            r'\[\[Category:([^\]]+)\]\]',
+            r'\[\[category:([^\]]+)\]\]'
+        ]
+        
+        parent_categories = []
+        for pattern in parent_patterns:
+            parent_categories.extend(re.findall(pattern, text, re.IGNORECASE))
+        
+        # Validate parent categories
+        valid_parents = []
+        for parent_name in parent_categories:
+            try:
+                parent_cat = pywikibot.Category(site, f"Category:{parent_name.strip()}")
+                if parent_cat.exists():
+                    valid_parents.append(parent_cat.title())
+            except Exception:
+                pass
+        
+        return {
+            'category': category.title(),
+            'is_orphaned': len(valid_parents) == 0,
+            'potential_parents': valid_parents
+        }
+    
+    except Exception as e:
+        pywikibot.error(f"Error checking category {category.title()}: {e}")
+        return {
+            'category': category.title(),
+            'is_orphaned': False,
+            'error': str(e)
+        }
+
+def process_dates(dates, username):
+    """
+    Process categories for given dates.
+    
+    Args:
+        dates (list): List of date strings
+        username (str): Username to include in category names
+    
+    Returns:
+        list: List of orphaned category information
+    """
+    orphaned_categories = []
+    not_found_categories = []
+    
+    for date_str in dates:
         try:
-            # Load current text of the category page
-            page = pywikibot.Page(site, search_cat_name)
-            current_text = page.text
+            category = find_category(date_str, username)
             
+            if not category or not category.exists():
+                not_found_categories.append(date_str)
+                continue
+            
+            status = check_category_status(category)
+            
+            if status['is_orphaned']:
+                orphaned_categories.append(status)
+        
         except Exception as e:
-            print(f"Error editing category {search_cat_name}: {e}")
-    else:
-        print(f"Category not found: {search_cat_name}")
-        not_found_categories.append(search_cat_name)
-
-def main():
-    # Process all category dates in the list
-    for date in categories_dates:
-        process_category(date)
+            pywikibot.error(f"Error processing date {date_str}: {e}")
     
-    # At the end, output categories not found
-    if not_found_categories:
-        print("\nThe following categories could not be found:")
-        for cat in not_found_categories:
-            print(cat)
-    else:
-        print("\nAll categories were found and processed.")
+    # Generate report
+    report = create_report(orphaned_categories, not_found_categories)
+    save_report(report)
+    
+    return orphaned_categories
 
-if __name__ == "__main__":
-    main()
+def create_report(orphaned_categories, not_found_categories):
+    """
+    Create a report of orphaned categories.
+    
+    Args:
+        orphaned_categories (list): List of orphaned category information
+        not_found_categories (list): List of categories not found
+    
+    Returns:
+        str: Formatted report in wiki markup
+    """
+    report = """= Orphaned Categories Report =
+
+== Summary ==
+* Total orphaned categories: {}
+* Categories not found: {}
+
+== Orphaned Categories ==
+""".format(len(orphaned_categories), len(not_found_categories))
+    
+    if orphaned_categories:
+        for cat_info in orphaned_categories:
+            report += f"* [[:{cat_info['category']}]]\n"
+            if cat_info.get('potential_parents'):
+                report += "  Potential parent categories:\n"
+                for parent in cat_info['potential_parents']:
+                    report += f"  - [[:{parent}]]\n"
+    else:
+        report += "No orphaned categories found.\n"
+    
+    if not_found_categories:
+        report += "\n== Categories Not Found ==\n"
+        for date_str in not_found_categories:
+            report += f"* {date_str}\n"
+    
+    report += f"\nReport generated by pwb_orphaned_categories.py on ~~~~~"
+    
+    return report
+
+def save_report(report):
+    """
+    Save the report to a user page.
+    
+    Args:
+        report (str): Report content to save
+    """
+    try:
+        user_page = pywikibot.Page(site, 'User:YOUR_USERNAME/pwb/Orphaned_Categories_Report')
+        user_page.text = report
+        user_page.save(summary="pwb: Updated orphaned categories report")
+        print(f"Report saved to {user_page.title()}")
+    except Exception as e:
+        print(f"Error saving report: {e}")
+        print("Report content:")
+        print(report)
+
+def interactive_mode():
+    """Interactive mode for managing orphaned categories."""
+    print("=== PWB Orphaned Categories Tool ===")
+    
+    while True:
+        print("\nOptions:")
+        print("1. Check categories for specific dates")
+        print
