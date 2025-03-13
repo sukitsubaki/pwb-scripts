@@ -1,6 +1,6 @@
 # pwb-scripts
 
-A lightweight and minimalist collection of Pywikibot scripts for automating tasks on Wikimedia Commons. This toolkit helps with categorization, file management, metadata extraction, and various maintenance tasks.
+A collection of Pywikibot scripts for automating tasks on Wikimedia Commons. This toolkit helps with categorization, file management, metadata extraction, and various maintenance tasks.
 
 ## Overview
 
